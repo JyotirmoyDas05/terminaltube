@@ -1,0 +1,7 @@
+# Ignore .github and Vs code folder and all files inside
+.github/
+.vscode/
+
+# Ignore build artifacts
+terminaltube.exe
+*.exe

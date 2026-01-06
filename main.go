@@ -13,8 +13,11 @@ import (
 	"terminaltube/internal/fetcher"
 	"terminaltube/internal/renderer"
 	"terminaltube/internal/terminal"
+	"terminaltube/internal/tui"
 	"terminaltube/pkg/types"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // calculateOptimalRenderSize calculates the best render dimensions for the current terminal
@@ -101,10 +104,6 @@ const (
 )
 
 func main() {
-	fmt.Printf("%s v%s - Terminal Media Player\n", appName, appVersion)
-	fmt.Println("Inspired by Sakura - Cross-platform terminal multimedia player")
-	fmt.Println(strings.Repeat("=", 60))
-
 	// Initialize terminal control
 	termControl := terminal.NewControl()
 	defer termControl.ShowCursor()
@@ -115,7 +114,6 @@ func main() {
 
 	go func() {
 		<-signalChan
-		fmt.Println("\n\nShutting down gracefully...")
 		termControl.ShowCursor()
 		termControl.Reset()
 		os.Exit(0)
@@ -124,7 +122,6 @@ func main() {
 	// Detect terminal capabilities
 	capabilities, err := terminal.DetectCapabilities()
 	if err != nil {
-		fmt.Printf("Warning: Could not detect terminal capabilities: %v\n", err)
 		capabilities = types.TerminalCapabilities{
 			Width:          80,
 			Height:         24,
@@ -135,20 +132,70 @@ func main() {
 		}
 	}
 
-	// Display terminal information
-	displayTerminalInfo(capabilities)
-
 	// Initialize renderer manager
 	rendererManager := renderer.NewRendererManager(capabilities)
 
-	// Main application loop
-	for {
-		if !showMainMenu(rendererManager, termControl, capabilities) {
-			break
+	// Check for missing dependencies on first run
+	if tui.ShouldShowInstaller() {
+		installerModel := tui.NewInstallerModel()
+		installerProgram := tea.NewProgram(installerModel, tea.WithAltScreen())
+		if _, err := installerProgram.Run(); err != nil {
+			fmt.Printf("Installer error: %v\n", err)
 		}
 	}
 
-	fmt.Println("Thank you for using TerminalTube!")
+	// Run Bubble Tea TUI
+	// We run in a loop to handle actions that need full terminal access (playback, tests)
+	for {
+		model := tui.NewModel(rendererManager, termControl, capabilities)
+		p := tea.NewProgram(model, tea.WithAltScreen())
+
+		finalModel, err := p.Run()
+		if err != nil {
+			fmt.Printf("Error running TUI: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Check next action
+		m, ok := finalModel.(tui.Model)
+		if !ok || !m.Quitting {
+			// Should be quitting if returned, unless error
+			break
+		}
+
+		// If no next action, just exit
+		if m.NextAction == "" {
+			break
+		}
+
+		// Execute action
+		// We're outside Bubble Tea now, so we have full terminal control
+		termControl.Reset()
+		termControl.ClearScreen()
+
+		switch m.NextAction {
+		case "image":
+			handleImageDisplay(rendererManager, termControl, capabilities, m.NextArgs)
+		case "gif":
+			handleGIFPlayback(rendererManager, termControl, capabilities, m.NextArgs)
+		case "gif-url":
+			handleGIFFromURL(rendererManager, termControl, capabilities, m.NextArgs)
+		case "video-url":
+			handleVideoFromURL(rendererManager, termControl, capabilities, m.NextArgs)
+		case "video":
+			handleVideoFromFile(rendererManager, termControl, capabilities, m.NextArgs)
+		case "test":
+			runRenderingTests(rendererManager, capabilities)
+		}
+
+		// Wait for user input before returning to TUI (except for tests which likely have their own pause)
+		// For consistency, most handlers should pause themselves if needed.
+		// We'll add a generic pause here just in case, but handlers usually clear screen at end.
+		// Actually, let's let handlers handle the "Press Enter to continue" if they want.
+		// But to prevent immediate flash back to menu if handler crashes/returns fast:
+		// fmt.Println("\nPress Enter to return to menu...")
+		// bufio.NewScanner(os.Stdin).Scan()
+	}
 }
 
 // displayTerminalInfo shows detected terminal capabilities
@@ -169,58 +216,21 @@ func displayTerminalInfo(capabilities types.TerminalCapabilities) {
 	fmt.Println(strings.Repeat("-", 40))
 }
 
-// showMainMenu displays the main menu and handles user input
-func showMainMenu(rendererManager *renderer.RendererManager, termControl *terminal.Control, capabilities types.TerminalCapabilities) bool {
-	fmt.Println("\nMain Menu:")
-	fmt.Println("1. Display Image")
-	fmt.Println("2. Play GIF Animation")
-	fmt.Println("3. Play Video from URL")
-	fmt.Println("4. Play Video from File")
-	fmt.Println("5. Terminal Information")
-	fmt.Println("6. Rendering Tests")
-	fmt.Println("0. Exit")
-	fmt.Print("\nSelect option: ")
-
-	scanner := bufio.NewScanner(os.Stdin)
-	if !scanner.Scan() {
-		return false
-	}
-
-	choice := strings.TrimSpace(scanner.Text())
-
-	switch choice {
-	case "1":
-		handleImageDisplay(rendererManager, termControl, capabilities)
-	case "2":
-		handleGIFPlayback(rendererManager, termControl, capabilities)
-	case "3":
-		handleVideoFromURL(rendererManager, termControl, capabilities)
-	case "4":
-		handleVideoFromFile(rendererManager, termControl, capabilities)
-	case "5":
-		showDetailedTerminalInfo(termControl)
-	case "6":
-		runRenderingTests(rendererManager, capabilities)
-	case "0":
-		return false
-	default:
-		fmt.Println("Invalid option. Please try again.")
-	}
-
-	return true
-}
-
 // handleImageDisplay handles static image display
-func handleImageDisplay(rendererManager *renderer.RendererManager, termControl *terminal.Control, capabilities types.TerminalCapabilities) {
-	fmt.Print("Enter image file path: ")
-	scanner := bufio.NewScanner(os.Stdin)
-	if !scanner.Scan() {
-		return
+func handleImageDisplay(rendererManager *renderer.RendererManager, termControl *terminal.Control, capabilities types.TerminalCapabilities, imagePath string) {
+	if imagePath == "" {
+		fmt.Print("Enter image file path: ")
+		scanner := bufio.NewScanner(os.Stdin)
+		if !scanner.Scan() {
+			return
+		}
+		imagePath = strings.TrimSpace(scanner.Text())
 	}
 
-	imagePath := strings.TrimSpace(scanner.Text())
 	if imagePath == "" {
 		fmt.Println("No path provided.")
+		// Wait before returning
+		time.Sleep(1 * time.Second)
 		return
 	}
 
@@ -306,36 +316,89 @@ func handleImageDisplay(rendererManager *renderer.RendererManager, termControl *
 	fmt.Print(rendered)
 
 	fmt.Printf("\nPress Enter to continue...")
-	scanner.Scan()
+	bufio.NewScanner(os.Stdin).Scan() // Use fresh scanner
 
 	termControl.ShowCursor()
 	termControl.ClearScreen()
 }
 
 // handleGIFPlayback handles animated GIF playback
-func handleGIFPlayback(rendererManager *renderer.RendererManager, termControl *terminal.Control, capabilities types.TerminalCapabilities) {
-	fmt.Print("Enter GIF file path: ")
-	scanner := bufio.NewScanner(os.Stdin)
-	if !scanner.Scan() {
-		return
+func handleGIFPlayback(rendererManager *renderer.RendererManager, termControl *terminal.Control, capabilities types.TerminalCapabilities, gifPath string) {
+	if gifPath == "" {
+		fmt.Print("Enter GIF file path: ")
+		scanner := bufio.NewScanner(os.Stdin)
+		if !scanner.Scan() {
+			return
+		}
+		gifPath = strings.TrimSpace(scanner.Text())
 	}
 
-	gifPath := strings.TrimSpace(scanner.Text())
 	if gifPath == "" {
 		fmt.Println("No path provided.")
+		time.Sleep(1 * time.Second)
 		return
 	}
 
 	// Check if file exists
 	if _, err := os.Stat(gifPath); os.IsNotExist(err) {
 		fmt.Printf("File not found: %s\n", gifPath)
+		time.Sleep(2 * time.Second)
 		return
 	}
 
+	playGIFFile(gifPath, rendererManager, termControl, capabilities)
+}
+
+// handleGIFFromURL handles GIF playback from URL
+func handleGIFFromURL(rendererManager *renderer.RendererManager, termControl *terminal.Control, capabilities types.TerminalCapabilities, url string) {
+	if url == "" {
+		fmt.Print("Enter GIF URL: ")
+		scanner := bufio.NewScanner(os.Stdin)
+		if !scanner.Scan() {
+			return
+		}
+		url = strings.TrimSpace(scanner.Text())
+	}
+
+	if url == "" {
+		fmt.Println("No URL provided.")
+		time.Sleep(1 * time.Second)
+		return
+	}
+
+	// Download GIF
+	downloader := fetcher.NewDownloader()
+	defer downloader.Close()
+
+	fmt.Println("Downloading GIF...")
+
+	tempPath, err := downloader.DownloadToTemp(url, func(downloaded, total int64, percent float64) {
+		if total > 0 {
+			fmt.Printf("\rProgress: %.1f%% (%d/%d bytes)", percent, downloaded, total)
+		} else {
+			fmt.Printf("\rDownloaded: %d bytes", downloaded)
+		}
+	})
+
+	if err != nil {
+		fmt.Printf("\nFailed to download GIF: %v\n", err)
+		time.Sleep(3 * time.Second)
+		return
+	}
+	defer os.Remove(tempPath)
+
+	fmt.Printf("\nDownload complete: %s\n", tempPath)
+
+	playGIFFile(tempPath, rendererManager, termControl, capabilities)
+}
+
+// playGIFFile plays a local GIF file
+func playGIFFile(gifPath string, rendererManager *renderer.RendererManager, termControl *terminal.Control, capabilities types.TerminalCapabilities) {
 	// Load GIF
 	gifDecoder := decoder.NewGIFDecoder()
 	if !gifDecoder.IsSupported(gifPath) {
 		fmt.Println("Not a valid GIF file.")
+		time.Sleep(2 * time.Second)
 		return
 	}
 
@@ -435,27 +498,25 @@ func handleGIFPlayback(rendererManager *renderer.RendererManager, termControl *t
 }
 
 // handleVideoFromURL handles video playback from URL
-func handleVideoFromURL(rendererManager *renderer.RendererManager, termControl *terminal.Control, capabilities types.TerminalCapabilities) {
-	fmt.Print("Enter video URL: ")
-	scanner := bufio.NewScanner(os.Stdin)
-	if !scanner.Scan() {
-		return
+func handleVideoFromURL(rendererManager *renderer.RendererManager, termControl *terminal.Control, capabilities types.TerminalCapabilities, videoURL string) {
+	if videoURL == "" {
+		fmt.Print("Enter video URL: ")
+		scanner := bufio.NewScanner(os.Stdin)
+		if !scanner.Scan() {
+			return
+		}
+		videoURL = strings.TrimSpace(scanner.Text())
 	}
 
-	videoURL := strings.TrimSpace(scanner.Text())
 	if videoURL == "" {
 		fmt.Println("No URL provided.")
+		time.Sleep(1 * time.Second)
 		return
 	}
 
 	// Download video
 	downloader := fetcher.NewDownloader()
 	defer downloader.Close()
-
-	if !downloader.IsValidURL(videoURL) {
-		fmt.Println("Invalid URL format.")
-		return
-	}
 
 	// Check for YouTube URLs - stream directly using yt-dlp
 	if downloader.IsYouTubeURL(videoURL) {
@@ -534,16 +595,19 @@ func handleVideoFromURL(rendererManager *renderer.RendererManager, termControl *
 }
 
 // handleVideoFromFile handles video playback from local file
-func handleVideoFromFile(rendererManager *renderer.RendererManager, termControl *terminal.Control, capabilities types.TerminalCapabilities) {
-	fmt.Print("Enter video file path: ")
-	scanner := bufio.NewScanner(os.Stdin)
-	if !scanner.Scan() {
-		return
+func handleVideoFromFile(rendererManager *renderer.RendererManager, termControl *terminal.Control, capabilities types.TerminalCapabilities, videoPath string) {
+	if videoPath == "" {
+		fmt.Print("Enter video file path: ")
+		scanner := bufio.NewScanner(os.Stdin)
+		if !scanner.Scan() {
+			return
+		}
+		videoPath = strings.TrimSpace(scanner.Text())
 	}
 
-	videoPath := strings.TrimSpace(scanner.Text())
 	if videoPath == "" {
 		fmt.Println("No path provided.")
+		time.Sleep(1 * time.Second)
 		return
 	}
 

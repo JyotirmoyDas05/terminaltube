@@ -1,6 +1,6 @@
 # TerminalTube
 
-A cross-platform terminal media player that renders images, GIFs, and videos using SIXEL graphics with synchronized audio playback. Inspired by [Sakura](https://github.com/Sarthak2143/sakura).
+A cross-platform terminal media player that renders images, GIFs, and videos using SIXEL graphics with synchronized audio playback.
 
 ## Features
 
@@ -388,7 +388,7 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Acknowledgments
 
-- Inspired by [Sakura](https://github.com/Sarthak2143/sakura) terminal media player
+- Terminal graphics techniques from impulse-gerp-2025 SIXEL demo
 - Uses [OpenCV](https://opencv.org/) for video processing
 - Terminal graphics techniques from [libsixel](https://github.com/saitoha/libsixel)
 - Cross-platform audio via [oto](https://github.com/ebitengine/oto) and [beep](https://github.com/faiface/beep)
